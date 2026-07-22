@@ -1,0 +1,1 @@
+# SCOPE: takes the raw data from the other two scripts and creates easily digestible results for each variable and overall

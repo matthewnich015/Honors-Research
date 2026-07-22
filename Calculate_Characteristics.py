@@ -1,0 +1,1 @@
+# SCOPE: for the ADU results for each combination of variables, calculate characteristic data (such as median household income, mean walk score, etc.)
