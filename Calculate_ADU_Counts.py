@@ -4,39 +4,41 @@ import math
 import random
 import pandas as pd
 import geopandas as gpd
-import shapely as shapely
+import shapely
+import pathlib
+import itertools
 
 # === GLOBAL VARIABLES =================================================================================================
-# full area data paths (38,683 parcels)
+# full area data paths (38,683 parcels)]
 pF, bF = "../Data/Parcel_Polygons/REA_Property_Polygons.shp", "../Data/Building_Polygons/Building_Polygons.shp"
 sF, zF = "../Data/Street_Network/Street_Network.shp", "../Data/Zoning_Polygons/Zoning_Polygons.shp"
 fF, dF = "../Data/FEMA_Flood_Zone_Polygons/FEMA_Flood_Zone_Polygons.shp", "../Data/Driveway_Polygons/Driveway_Polygons.shp"
-hF = "../Data/Zoning_Historic_District_Polygons/Zoning_Historic_District_Polygons.shp"
+hF, tF = "../Data/Zoning_Historic_District_Polygons/Zoning_Historic_District_Polygons.shp", "../Data/Tree_Canopy/Tree_Canopy_2023.shp"
 # large test data paths (4,159 parcels)
 pL, bL = "../Data/Parcel_Polygons_Large/Parcel_Polygons_Large.shp", "../Data/Building_Polygons_Large/Building_Polygons_Large.shp"
 sL, zL = "../Data/Street_Network_Large/Street_Network_Large.shp", "../Data/Zoning_Polygons_Large/Zoning_Polygons_Large.shp"
 fL, dL = "../Data/FEMA_Flood_Zone_Polygons_Large/FEMA_Flood_Zone_Polygons_Large.shp", "../Data/Driveway_Polygons_Large/Driveway_Polygons_Large.shp"
-hL = "../Data/Zoning_Historic_District_Polygons_Large/Zoning_Historic_District_Polygons_Large.shp"
+hL, tL = "../Data/Zoning_Historic_District_Polygons_Large/Zoning_Historic_District_Polygons_Large.shp", "../Data/Tree_Canopy/Tree_Canopy_2023.shp"
 # small test area data paths (339 parcels)
 pS, bS = "../Data/Parcel_Polygons_Small/Parcel_Polygons_Small.shp", "../Data/Building_Polygons_Small/Building_Polygons_Small.shp"
 sS, zS = "../Data/Street_Network_Small/Street_Network_Small.shp", "../Data/Zoning_Polygons_Small/Zoning_Polygons_Small.shp"
 fS, dS = "../Data/FEMA_Flood_Zone_Polygons_Small/FEMA_Flood_Zone_Polygons_Small.shp", "../Data/Driveway_Polygons_Small/Driveway_Polygons_Small.shp"
-hS = "../Data/Zoning_Historic_District_Polygons_Small/Zoning_Historic_District_Polygons_Small.shp"
+hS, tS = "../Data/Zoning_Historic_District_Polygons_Small/Zoning_Historic_District_Polygons_Small.shp", "../Data/Tree_Canopy/Tree_Canopy_2023.shp"
 # master data paths (default full area, change to test cases via functions)
 (parcelsPath, buildingFootprintPath, streetNetworkPath, zoningPath, floodplainsPath,
- historicDistrictsPath, drivewaysPath) = pF, bF, sF, zF, fF, hF, dF
+ historicDistrictsPath, drivewaysPath, treeCanopyPath) = pF, bF, sF, zF, fF, hF, dF, tF
 
 # === PRIVATE FUNCTIONS ================================================================================================
 # set test cases
 def SetDataPathsToLargeTest():
     global parcelsPath, buildingFootprintsPath, streetNetworkPath, zoningPath, floodplainsPath, historicDistrictsPath, drivewaysPath
     (parcelsPath, buildingFootprintsPath, streetNetworkPath, zoningPath, floodplainsPath,
-     historicDistrictsPath, drivewaysPath) = pL, bL, sL, zL, fL, hL, dL
+     historicDistrictsPath, drivewaysPath, treeCanopyPath) = pL, bL, sL, zL, fL, hL, dL, tL
 
 def SetDataPathsToSmallTest():
     global parcelsPath, buildingFootprintsPath, streetNetworkPath, zoningPath, floodplainsPath, historicDistrictsPath, drivewaysPath
     (parcelsPath, buildingFootprintsPath, streetNetworkPath, zoningPath, floodplainsPath,
-     historicDistrictsPath, drivewaysPath) = pS, bS, sS, zS, fS, hS, dS
+     historicDistrictsPath, drivewaysPath, treeCanopyPath) = pS, bS, sS, zS, fS, hS, dS, tS
 
 
 # step 1 functions
@@ -50,12 +52,13 @@ def CalculateSetbacks(fullParcel: gpd.GeoDataFrame, parcel: gpd.GeoDataFrame, se
     return parcelSetbacks
 
 def CalculateLotCoverage(fullParcel: gpd.GeoDataFrame, buildingArea: float):
-    root = "../Data/"
-    buildingFootprints = gpd.read_file(root + "Building_Polygons/Building_Polygons.shp")
+    buildingFootprints = gpd.read_file("../Data/Building_Polygons/Building_Polygons.shp")
 
     # find the area of buildings in the parcel
-    fullParcel["buildings"] = [gpd.clip(buildingFootprints, row.geometry).geometry.union_all() for idx, row in fullParcel.iterrows()]
-    fullParcel["areaExisting"] = fullParcel["buildings"].area
+    spatialIndex = buildingFootprints.sindex
+    fullParcel["buildings"] = [buildingFootprints.iloc[spatialIndex.query(p, predicate="intersects")].
+    intersection(p).union_all() for p in fullParcel.geometry]
+    fullParcel["areaExisting"] = gpd.GeoSeries(fullParcel["buildings"]).area
 
     # calculate lot coverage
     fullParcel["totalArea"] = fullParcel["areaExisting"] + buildingArea
@@ -63,12 +66,13 @@ def CalculateLotCoverage(fullParcel: gpd.GeoDataFrame, buildingArea: float):
     return fullParcel
 
 def CalculateFAR(fullParcel: gpd.GeoDataFrame, buildingArea: float):
-    root = "../Data/"
-    buildingFootprints = gpd.read_file(root + "Building_Polygons/Building_Polygons.shp")
+    buildingFootprints = gpd.read_file("../Data/Building_Polygons/Building_Polygons.shp")
 
     # find the area of buildings in the parcel
-    fullParcel["buildings"] = [gpd.clip(buildingFootprints, row.geometry).geometry.union_all() for idx, row in fullParcel.iterrows()]
-    fullParcel["areaExisting"] = fullParcel["buildings"].area
+    spatialIndex = buildingFootprints.sindex
+    fullParcel["buildings"] = [buildingFootprints.iloc[spatialIndex.query(p, predicate="intersects")].
+    intersection(p).union_all() for p in fullParcel.geometry]
+    fullParcel["areaExisting"] = gpd.GeoSeries(fullParcel["buildings"]).area
 
     # calculate FAR (using 2.5 as average number of floors for pre-existing buildings)
     fullParcel["totalArea"] = fullParcel["areaExisting"] * 2.5 + buildingArea
@@ -112,8 +116,8 @@ def ADUCheckBasic(buildableArea: shapely.Polygon):
                 vars = {1: centroid.x + random.randrange((-int(radiusX)), (int(radiusX))),
                         2: centroid.y + random.randrange((-int(radiusY)), (int(radiusY))),
                         3: 90}  # vars are: posX, posY, rot
-                ADUT = shapely.translate(ADU, xoff=vars[1], yoff=vars[2])
-                ADUT = shapely.rotate(ADUT, vars[3])
+                ADUT = shapely.affinity.translate(ADU, xoff=vars[1], yoff=vars[2])
+                ADUT = shapely.affinity.rotate(ADUT, vars[3])
                 overlap = buildableArea.intersection(ADUT)
                 score = overlap.area
                 if score > 189.9:
@@ -154,8 +158,8 @@ def ADUCheckBasic(buildableArea: shapely.Polygon):
                             vars[currentVar] += variableShift
 
                             # evaulate new score
-                            ADUT = shapely.translate(ADU, xoff=vars[1], yoff=vars[2])
-                            ADUT = shapely.rotate(ADUT, vars[3])
+                            ADUT = shapely.affinity.translate(ADU, xoff=vars[1], yoff=vars[2])
+                            ADUT = shapely.affinity.rotate(ADUT, vars[3])
                             overlap = buildableArea.intersection(ADUT)
                             score = overlap.area
 
@@ -205,7 +209,6 @@ def ADUCheckBasic(buildableArea: shapely.Polygon):
 # misc. other
 # use this to seperate the front and back yard of a parcel
 def SplitFrontBackYard(parcel: shapely.Polygon):
-    print("Splitting Yard")
     # load data
     driveways = gpd.read_file(drivewaysPath)
     buildingFootprints = gpd.read_file(buildingFootprintsPath)
@@ -224,14 +227,12 @@ def SplitFrontBackYard(parcel: shapely.Polygon):
     # for each edge in the bbox
     fronts = gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:2283")
     if len(nearbyStreets) != 0:
-        print("there are streets")
         for idx, row in bboxE.iterrows():
             edge = row.geometry
             edgeCenter = edge.centroid
             # check if the edge is close enough to mark as front yard
             distance = min(edgeCenter.distance(nearbyStreets.geometry))
             if distance < 50:
-                print("found a front")
                 row = gpd.GeoDataFrame([{"geometry": bboxE.loc[idx, "geometry"]}], crs = "EPSG:2283")
                 fronts = pd.concat([fronts, row], ignore_index=True)
     # if there are more than one front edge or no front edges, use the driveway to determine the correct front edge
@@ -246,7 +247,6 @@ def SplitFrontBackYard(parcel: shapely.Polygon):
             row = gpd.GeoDataFrame([{"geometry": bboxE.loc[0, "geometry"]}], crs = "EPSG:2283")
             fronts = pd.concat([fronts, row], ignore_index=True)
         else:
-            print("using driveway")
             # find the closest street to the driveway
             nearbyStreets["distance"] = nearbyStreets.geometry.distance(driveway)
             closestStreetSegment = nearbyStreets.loc[nearbyStreets["distance"].idxmin()]
@@ -257,7 +257,6 @@ def SplitFrontBackYard(parcel: shapely.Polygon):
                 distance = edgeCenter.distance(closestStreetSegment.geometry)
                 if distance < distIdx[0]:
                     distIdx = (distance, idx)
-            print(distIdx)
             row = gpd.GeoDataFrame([{"geometry": bboxE.loc[distIdx[1], "geometry"]}], crs = "EPSG:2283")
             fronts = pd.concat([fronts, row], ignore_index=True)
     front = fronts.loc[0, "geometry"]
@@ -305,7 +304,7 @@ def SplitFrontBackYard(parcel: shapely.Polygon):
 
 # === STEP 0: SETUP ====================================================================================================
 def Step0():
-    print("STEP 0: Loading Data")
+    print("STEP 0: Loading data")
     # Projected Coordinate System: NAD 1983 StatePlane Virginia North FIPS 4501 (US Feet)
     # Projection: Lambert Conformal Conic
     # WKID: 2283
@@ -343,11 +342,6 @@ def Step0():
     merged = gpd.GeoDataFrame(pd.concat([filteredFootprints, driveways]))
     parcelStart = filteredParcels.overlay(merged, how="difference")
 
-    # add all necessary columns into the geodataframe
-    print("STEP 0: Adding columns to parcels to be filled in in steps 1, 2 and 3")
-    parcelStart[["Total_Count", "Detatched_Count", "Attached_Count", "Existing_Count",
-        "Walk_Score", "Bike_Score", "Transit_Score", "Near_Transit", "Median_Household_Income", "Median_Age"]] = None
-
     # split front and back yard
     splitYards = filteredParcels.geometry.apply(SplitFrontBackYard).apply(pd.Series)
     frontYards = gpd.GeoDataFrame({"Parcel_ID": splitYards.index, "geometry": splitYards["Front_Yard"]}, crs="EPSG:2283")
@@ -360,55 +354,207 @@ def Step0():
     parcelStart.to_file("../Output/Step0_Parcels.gpkg", driver="GPKG", layer="ParcelStart")
     filteredFootprints.to_file("../Output/Step0_Building_Footprints.gpkg", driver="GPKG", layer="FilteredFootprints")
 
-# === STEP 1: SETBACKS, LOT COVERAGE, AND FAR ==========================================================================
 
+# === STEP 1: SETBACKS, LOT COVERAGE, AND FAR ==========================================================================
 def Step1():
-    print("STEP 1: Loading Data")
+    print("STEP 1: Loading data")
     # Projected Coordinate System: NAD 1983 StatePlane Virginia North FIPS 4501 (US Feet)
     # Projection: Lambert Conformal Conic
     # WKID: 2283
     parcels = gpd.read_file("../Output/Step0_Parcels.gpkg", driver="GPKG", layer="ParcelStart")
-    fullParcels = gpd.read_file("../Output/Step0_Full_Parcels.gpkg", driver="GPKG", layer="FullParcels")
+    fullParcels = gpd.read_file("../Output/Full_Parcels.gpkg", driver="GPKG", layer="FullParcels")
 
     setbacks = [5, 10, 20, 30]
     FARs = [.3, .5, .7, .9]
     lotCoverages = [.2, .4, .6, .8]
 
     # Setbacks
+    print("STEP 1: Calculating for setbacks")
     for setback in setbacks:
+        print("STEP 1: Calculating Setback of " + str(setback) + " feet")
         parcelSetbacks = CalculateSetbacks(fullParcels, parcels, setback)
         result = parcelSetbacks.copy()
         result["Valid"] = parcelSetbacks.geometry.apply(ADUCheckBasic)
-        result = result["Valid"] == True
+        mask = result["Valid"] == True
+        result = result.loc[mask]
         result.to_file("../Output/S" + str(setback) + "/S" + str(setback) + ".gpkg")
 
     # Lot Coverage
+    print("STEP 1: Calculating for lot coverages")
     for setback in setbacks:
+        print("STEP 1: Calculating Lot Coverages for setback of " + str(setback) + " feet")
         base = gpd.read_file("../Output/S" + str(setback) + "/S" + str(setback) + ".gpkg")
         result = CalculateLotCoverage(base, 17.65)
         for lotCoverage in lotCoverages:
             result["Valid"] = result["lotCoverage"] > lotCoverage
-            result = result["Valid"] == True
-            result = result.drop(columns=["lotCoverage", "totalArea", "areaExisting", "buildings"])
-            result.to_file("../Output/S" + str(setback) + "/L" + str(lotCoverage * 100) +
-                           "/S" + str(setback) + "L" + str(lotCoverage * 100) + ".gpkg")
+            mask = result["Valid"] == True
+            result = result.loc[mask]
+            resultOutput = result.drop(columns=["lotCoverage", "totalArea", "areaExisting", "buildings"])
+            resultOutput.to_file("../Output/S" + str(setback) + "/L" + str(int(lotCoverage * 100)) +
+                           "/S" + str(setback) + "L" + str(int(lotCoverage * 100)) + ".gpkg")
 
     # FAR
+    print("STEP 1: Calculating for FARs")
     for setback in setbacks:
+        print("STEP 1: Calculating FARs for setback of " + str(setback) + " feet")
         base = gpd.read_file("../Output/S" + str(setback) + "/S" + str(setback) + ".gpkg")
         result = CalculateFAR(base, 17.65)
         for FAR in FARs:
             result["Valid"] = result["FAR"] > FAR
-            result = result["Valid"] == True
-            result = result.drop(columns=["FAR", "totalArea", "areaExisting", "buildings"])
-            result.to_file("../Output/S" + str(setback) + "/F" + str(FAR).replace("0", "") +
+            mask = result["Valid"] == True
+            result = result.loc[mask]
+            resultOutput = result.drop(columns=["FAR", "totalArea", "areaExisting", "buildings"])
+            resultOutput.to_file("../Output/S" + str(setback) + "/F" + str(FAR).replace("0", "") +
                            "/S" + str(setback) + "F" + str(FAR).replace("0", "") + ".gpkg")
 
 
+# === STEP 2: HOUSING TYPE, TREE PRESERVATION, FRONT/BACK YARD, ADU TYPE, ADU NUMBER, PARKING ==========================
+def Step2():
+    print("STEP 2: Loading data")
+    # Projected Coordinate System: NAD 1983 StatePlane Virginia North FIPS 4501 (US Feet)
+    # Projection: Lambert Conformal Conic
+    # WKID: 2283
+    fullParcels = gpd.read_file("../Output/Full_Parcels.gpkg", driver="GPKG", layer="FullParcels")
+    frontYards = gpd.read_file("../Output/Front_Yards.gpkg", driver="GPKG", layer="FrontYards")
+    zoning = gpd.read_file(zoningPath)
+    treeCanopy = gpd.read_file(treeCanopyPath)
 
 
-            
+    # lists of file path extensions
+    setbacks = ["S5", "S10", "S20", "S30"]
+    FARLCs = ["F.3", "F.5", "F.7", "F.9", "L20", "L40", "L60", "L80"]
+    housingTypes = ["Single", "SingleMulti"]
+    treePreservation = ["noTreePreservation", "TreePreservation"]
+    frontBackYard = ["backOnly", "frontAndBack"]
+    ADUType = "ADUType"
+    ADUNumber = "ADUNumber"
+    parking = ["noParkingRequired", "parkingRequired"]
 
+    # housing type
+    print ("Calculating for housing type")
+    # split zoning for single family only
+    singleMask = zoning["ZN_DESIG"].str.contains("R-6|R-5|R-8|R-10|R-20|R-10T")
+    singleZoning = zoning[singleMask]
+    for setback, FARLC in itertools.product(setbacks, FARLCs):
+        path = ("../Output/" + setback + "/" + FARLC + "/")
+        parcels = gpd.read_file(path + setback + FARLC + ".gpkg")
+        for housingType in housingTypes:
+            # create folder
+            pathlib.Path(path + housingType).mkdir(parents=True, exist_ok=True)
+            # if there are already no valid parcels or is single and multi family, make no changes
+            if len(parcels.geometry) == 0 or housingType == "SingleMulti":
+                output = parcels
+            # else find single family only parcels
+            else:
+                mask = parcels.geometry.apply(lambda g: singleZoning.intersects(g).any())
+                output = parcels[mask]
+            # write to file
+            output.to_file(path + housingType + "/" + setback + FARLC + housingType + ".gpkg", driver="GPKG")
+
+    # tree preservation
+    print ("Calculating for tree preservation")
+    for setback, FARLC, housingType in itertools.product(setbacks, FARLCs, housingTypes):
+        path = ("../Output/" + setback + "/" + FARLC + "/" + housingType + "/")
+        parcels = gpd.read_file(path + setback + FARLC + housingType + ".gpkg")
+        for treeOption in treePreservation:
+            # create folder
+            pathlib.Path(path + treeOption).mkdir(parents=True, exist_ok=True)
+            # if there are already no valid parcels or is no tree preservation, make no changes
+            if len(parcels.geometry) == 0 or treeOption == "noTreePreservation":
+                output = parcels
+            # else remove tree canopy from buildable area and re-assess
+            else:
+                parcelsNoTrees = gpd.overlay(parcels, treeCanopy, how="difference")
+                parcelsNoTrees["Valid"] = parcelsNoTrees.geometry.apply(ADUCheckBasic)
+                mask = parcelsNoTrees["Valid"] == True
+                output = parcelsNoTrees.loc[mask]
+            # write to file
+            output.to_file(path + treeOption + "/" + setback + FARLC + housingType + treeOption + ".gpkg", driver="GPKG")
+
+    # front / back yard
+    print ("Calculating for back or front and back yard")
+    for setback, FARLC, housingType, treeOption in itertools.product(setbacks, FARLCs, housingTypes, treePreservation):
+        path = ("../Output/" + setback + "/" + FARLC + "/" + housingType + "/" + treeOption + "/")
+        parcels = gpd.read_file(path + setback + FARLC + housingType + treeOption + ".gpkg")
+        for yardOption in frontBackYard:
+            # create folder
+            pathlib.Path(path + yardOption).mkdir(parents=True, exist_ok=True)
+            # if there are already no valid parcels or front and back yard, make no changes
+            if len(parcels.geometry) == 0 or yardOption == "frontAndBack":
+                output = parcels
+            # else remove front yard from buildable area and re-assess
+            else:
+                parcelsBackyard = gpd.overlay(parcels, frontYards, how="difference")
+                parcelsBackyard["Valid"] = parcelsBackyard.geometry.apply(ADUCheckBasic)
+                mask = parcelsBackyard["Valid"] == True
+                output = parcelsBackyard.loc[mask]
+            # write to file
+            output.to_file(path + yardOption + "/" + setback + FARLC + housingType + treeOption + yardOption + ".gpkg", driver="GPKG")
+
+    # front and back yard
+
+
+    # ADU type
+
+
+    # ADU number
+
+
+    # parking
+
+# === STEP 3: WALK SCORE, BIKE SCORE, TRANSIT SCORE, DENSITY, MEDIAN HHI ===============================================
+def Step3():
+    print("STEP 3: Loading data")
+    # Projected Coordinate System: NAD 1983 StatePlane Virginia North FIPS 4501 (US Feet)
+    # Projection: Lambert Conformal Conic
+    # WKID: 2283
+    fullParcels = gpd.read_file("../Output/Full_Parcels.gpkg", driver="GPKG", layer="FullParcels")
+    walkScore = []
+    bikeScore = []
+    transitScore = []
+    density = []
+    medianHHI = []
+
+    # lists of file path extensions
+    setbacks = ["S5", "S10", "S20", "S30"]
+    FARLCs = ["F.3", "F.5", "F.7", "F.9", "L20", "L40", "L60", "L80"]
+    housingTypes = ["Single", "SingleMulti"]
+    treePreservation = ["noTreePreservation", "TreePreservation"]
+    frontBackYard = ["backOnly", "frontAndBack"]
+    ADUType = "ADUType"
+    ADUNumber = "ADUNumber"
+    parking = ["noParkingRequired", "parkingRequired"]
+
+    # for each combination of variables
+    print("STEP 3: Running spatial joins")
+    for setback, FARLC, housingType, treeOption, yardOption, parkingType in itertools.product(
+    setbacks, FARLCs, housingTypes, treePreservation, frontBackYard, parking):
+        path = ("../Output/" + setback + "/" + FARLC + "/" + housingType + "/" + treeOption + "/" +
+                yardOption + "/" + ADUType + "/" + ADUNumber + "/" + parkingType + ".gpkg")
+        parcels = gpd.read_file(path)
+
+        # run spatial joins for each variable
+        parcelsCenter = gpd.GeoDataFrame(geometry=parcels.geometry.centroid, crs="EPSG:2283")
+        walkScoreCol = gpd.sjoin(parcelsCenter, walkScore, how="left", predicate="within")
+        bikeScoreCol = gpd.sjoin(parcelsCenter, bikeScore, how="left", predicate="within")
+        transitScoreCol = gpd.sjoin(parcelsCenter, transitScore, how="left", predicate="within")
+        densityCol = gpd.sjoin(parcelsCenter, density, how="left", predicate="within")
+        medianHHICol = gpd.sjoin(parcelsCenter, medianHHI, how="left", predicate="within")
+
+        # drop duplicates from boundary points (if point is on a line)
+        walkScoreCol = walkScoreCol[~walkScoreCol.index.duplicated(keep="first")]
+        bikeScoreCol = bikeScoreCol[~bikeScoreCol.index.duplicated(keep="first")]
+        transitScoreCol = transitScoreCol[~transitScoreCol.index.duplicated(keep="first")]
+        densityCol = densityCol[~densityCol.index.duplicated(keep="first")]
+        medianHHICol = medianHHICol[~medianHHICol.index.duplicated(keep="first")]
+
+        # create columns
+        parcels[["Walk_Score", "Bike_Score", "Transit_Score", "Density", "MedianHHI"]] = pd.concat(
+            [walkScoreCol["Walk_Score"], bikeScoreCol["Bike_Score"], transitScoreCol["Transit_Score"],
+             densityCol["Density"], medianHHICol["MedianHHI"]], axis=1)
+
+        # save file
+        parcels.to_file(path, driver="GPKG")
 
 def ADUCheckTest():
     box = gpd.read_file("../box2.gpkg")
