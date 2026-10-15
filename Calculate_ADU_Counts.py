@@ -363,10 +363,26 @@ def Step1():
     # WKID: 2283
     parcels = gpd.read_file("../Output/Step0_Parcels.gpkg", driver="GPKG", layer="ParcelStart")
     fullParcels = gpd.read_file("../Output/Full_Parcels.gpkg", driver="GPKG", layer="FullParcels")
+    buildingFootprints = gpd.read_file("../Output/Step0_Building_Footprints.gpkg", layer="Buildings")
 
     setbacks = [5, 10, 20, 30]
     FARs = [.3, .5, .7, .9]
     lotCoverages = [.2, .4, .6, .8]
+
+    # existing building ADUs
+    print("STEP 1: Finding valid existing buildings")
+    parcels["existing"] = 0
+    for idx, parcel in parcels.geometry.items():
+        buildings = buildingFootprints[buildingFootprints.intersects(parcel)].copy()
+        if len(buildings) > 1:
+            buildings["Area"] = buildings.geometry.area
+            buildings = buildings.drop(buildings["Area"].idxmax())
+            if buildings["Area"].between(190, 800).any():
+                parcels.loc[idx, "existing"] = 1
+    validParcels = parcels[parcels["existing"] == 1]
+    validParcels = validParcels.drop(columns="existing")
+    validParcels.to_file("../Output/Step1_ExistingBuildingParcels.gpkg", driver="GPKG", layer="ExistingBuildingParcels")
+
 
     # Setbacks
     print("STEP 1: Calculating for setbacks")
@@ -418,7 +434,7 @@ def Step2():
     frontYards = gpd.read_file("../Output/Front_Yards.gpkg", driver="GPKG", layer="FrontYards")
     zoning = gpd.read_file(zoningPath)
     treeCanopy = gpd.read_file(treeCanopyPath)
-
+    buildingFootprints = gpd.read_file(buildingFootprintsPath)
 
     # lists of file path extensions
     setbacks = ["S5", "S10", "S20", "S30"]
@@ -426,9 +442,6 @@ def Step2():
     housingTypes = ["Single", "SingleMulti"]
     treePreservation = ["noTreePreservation", "TreePreservation"]
     frontBackYard = ["backOnly", "frontAndBack"]
-    ADUType = "ADUType"
-    ADUNumber = "ADUNumber"
-    parking = ["noParkingRequired", "parkingRequired"]
 
     # housing type
     print ("Calculating for housing type")
@@ -489,18 +502,78 @@ def Step2():
                 mask = parcelsBackyard["Valid"] == True
                 output = parcelsBackyard.loc[mask]
             # write to file
-            output.to_file(path + yardOption + "/" + setback + FARLC + housingType + treeOption + yardOption + ".gpkg", driver="GPKG")
-
-    # front and back yard
-
+            output.to_file(path + yardOption + "/" + setback + FARLC + housingType + treeOption + yardOption + "temp1.gpkg", driver="GPKG")
 
     # ADU type
+    print ("Calculating for ADUType")
+    for setback, FARLC, housingType, treeOption, yardOption in itertools.product(
+    setbacks, FARLCs, housingTypes, treePreservation, frontBackYard):
+        path = ("../Output/" + setback + "/" + FARLC + "/" + housingType + "/" + treeOption + "/" + yardOption + "/")
+        parcels = gpd.read_file(path + setback + FARLC + housingType + treeOption + yardOption + "temp1.gpkg")
+        # if there are already no valid parcels make no changes
+        if len(parcels.geometry) == 0:
+            return
+        # else reasses ADU fit for multiple types
+        else:
+            # create columns (all are valid for attached)
+            parcels[["Detached_Count", "Attached_Count", "Existing_Count"]] = 0, 1, 0
 
+            # remove FSD (Fire seperation distance) buffer of main building from buildable area and reasses
+            buildings = parcels.geometry.intersection(buildingFootprints.geometry)
+            buildings = buildings.buffer(10)
+
+            parcelsNoFSD = parcels.copy()
+            parcelsNoFSD["geometry"] = parcels.geometry.difference(buildings)
+            parcelsNoFSD["Valid"] = parcelsNoFSD.geometry.apply(ADUCheckBasic)
+
+            # mark the ones where detatched does work as attached only. these will be processed in the next part
+            parcels.loc[parcelsNoFSD["Valid"], "Detached_Count"] = 1
+
+        # mark parcels with valid exisiting buildings
+        existingBuildingParcels = gpd.read_file("../Output/Step1_ExistingBuildingParcels.gpkg")
+        existingBuildingParcels.index = existingBuildingParcels["Parcel_ID"]
+        for ID, EBParcel in existingBuildingParcels.iterrows():
+            # if the parcel is valid for non-exisiting ADUs, mark the row
+            if ID in parcels["Parcel_ID"].values:
+                parcels.loc[parcels["Parcel_ID"] == ID, "Exisiting_Count"] = 1
+            # if the parcel isn't valid for non-existing ADUs (not in parcels), add it to the dataframe
+            else:
+                EBParcel = EBParcel.to_frame().T
+                EBParcel[["Detached_Count", "Attached_Count", "Exisiting_Count"]] = 0, 0, 1
+                parcels = parcels.append(EBParcel)
+
+        # write to file
+        output.to_file(path + setback + FARLC + housingType + treeOption + yardOption + "temp2.gpkg", driver="GPKG")
 
     # ADU number
-
+    print ("Calculating for ADUNumber")
+    for setback, FARLC, housingType, treeOption, yardOption in itertools.product(
+    setbacks, FARLCs, housingTypes, treePreservation, frontBackYard):
+        path = ("../Output/" + setback + "/" + FARLC + "/" + housingType + "/" + treeOption + "/" + yardOption + "/")
+        parcels = gpd.read_file(path + setback + FARLC + housingType + treeOption + yardOption + "temp2.gpkg")
+        # if there are already no valid parcels make no changes
+        if len(parcels.geometry) == 0:
+            return
+        # else reasses ADU fit for multiple ADUs per parcel
+        else:
+            output=1 # TODO
+        # write to file
+        output.to_file(path + setback + FARLC + housingType + treeOption + yardOption + "temp3.gpkg", driver="GPKG")
 
     # parking
+    print ("Calculating for parking")
+    for setback, FARLC, housingType, treeOption, yardOption in itertools.product(
+    setbacks, FARLCs, housingTypes, treePreservation, frontBackYard):
+        path = ("../Output/" + setback + "/" + FARLC + "/" + housingType + "/" + treeOption + "/" + yardOption + "/")
+        parcels = gpd.read_file(path + setback + FARLC + housingType + treeOption + yardOption + "temp3.gpkg")
+        # if there are already no valid parcels make no changes
+        if len(parcels.geometry) == 0:
+            return
+        # else retest ADU fit with parking spaces
+        else:
+            output=1 # TODO
+        # write to file
+        output.to_file(path + setback + FARLC + housingType + treeOption + yardOption + ".gpkg", driver="GPKG")
 
 # === STEP 3: WALK SCORE, BIKE SCORE, TRANSIT SCORE, DENSITY, MEDIAN HHI ===============================================
 def Step3():
@@ -527,11 +600,10 @@ def Step3():
 
     # for each combination of variables
     print("STEP 3: Running spatial joins")
-    for setback, FARLC, housingType, treeOption, yardOption, parkingType in itertools.product(
-    setbacks, FARLCs, housingTypes, treePreservation, frontBackYard, parking):
-        path = ("../Output/" + setback + "/" + FARLC + "/" + housingType + "/" + treeOption + "/" +
-                yardOption + "/" + ADUType + "/" + ADUNumber + "/" + parkingType + ".gpkg")
-        parcels = gpd.read_file(path)
+    for setback, FARLC, housingType, treeOption, yardOption in itertools.product(
+    setbacks, FARLCs, housingTypes, treePreservation, frontBackYard):
+        path = ("../Output/" + setback + "/" + FARLC + "/" + housingType + "/" + treeOption + "/" + yardOption + "/")
+        parcels = gpd.read_file(path + setback + FARLC + housingType + treeOption + yardOption + ".gpkg")
 
         # run spatial joins for each variable
         parcelsCenter = gpd.GeoDataFrame(geometry=parcels.geometry.centroid, crs="EPSG:2283")
